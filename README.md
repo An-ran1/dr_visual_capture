@@ -40,3 +40,20 @@ numpy==1.24.3
 message-filters==1.15.14
 sensor-msgs==1.13.1
 vision-msgs==1.0.0
+```
+
+### 3.1 视觉模块详细信息
+[机器人系统课程设计报告模版.docx](https://github.com/user-attachments/files/26588663/default.docx)
+
+安装图：
+<img width="191" height="162" alt="image" src="https://github.com/user-attachments/assets/636a9190-90e8-42f5-8da0-b24fb9f60df8" />
+
+ROS2节点工作流：
+<img width="433" height="317" alt="image" src="https://github.com/user-attachments/assets/b348779f-9cfe-4ba3-b202-9d760c7a4e19" />
+
+### 3.2 演示视频
+
+
+https://github.com/user-attachments/assets/958b77d0-c741-4365-88f4-a5dfdcdb564c
+
+
