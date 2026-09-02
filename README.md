@@ -1,59 +1,173 @@
-# dr_visual_capture
-六轴机械臂基于视觉抓取
-# 六轴机械臂视觉识别与抓取项目
-**机器人系统课程设计**  
-基于大然桌面6轴机械臂实现视觉定位、坐标转换与自动抓取，核心采用ROS架构+Intel RealSense D405深度相机完成近距离三维感知与目标抓取任务。
+# RGB-D Visual Grasping for a Six-Axis Robot
 
-## 一、项目简介
-本项目以6轴桌面机械臂为硬件载体，搭建**ROS视觉抓取系统**，通过深度相机实现目标物体的2D检测与3D坐标定位，经坐标系转换、手眼标定和逆运动学求解，完成机械臂的轨迹规划与精准抓取，解决了视觉模块卡顿、坐标偏移、关节限位等实际工程问题，实现了从视觉识别到机械抓取的全流程自动化。
+## Original project material
 
-### 1.1 核心功能
-- 深度相机实时采集RGB图/深度图，完成相机内参初始化
-- 目标物体2D检测框输出与3D空间坐标计算
-- 相机系→模型系→机械臂全局系的多坐标系转换与手眼标定
-- 机械臂逆运动学求解与关节限位判断
-- 机械臂末端轨迹规划与自适应夹爪抓取
-- 抓取完成后机械臂回退至初始位姿
+The system uses a DaRan desktop six-axis arm and an Intel RealSense D405 RGB-D
+camera.  The original project report template, installation photograph and
+demonstration video remain available below.
 
-## 二、硬件与环境依赖
-### 2.1 硬件清单
-| 硬件名称 | 型号/参数 | 作用 |
-|----------|-----------|------|
-| 6轴机械臂 | 大然桌面机械臂 | 核心执行机构，完成抓取动作 |
-| 深度相机 | Intel RealSense D405 | 近距离三维感知，采集RGB/深度数据，视野7cm~50cm，视角87°*58° |
-| 相机支架 | 定制款 | 将相机固定在机械臂第六关节，与关节同向 |
+[Robot-system course project report template](https://github.com/user-attachments/files/26588663/default.docx)
 
-### 2.2 软件环境依赖
-#### 2.2.1 核心系统与框架
-| 名称 | 版本/要求 | 说明 |
-|------|-----------|------|
-| 操作系统 | Ubuntu 20.04 / Windows 11 | 推荐Ubuntu，ROS兼容性更佳 |
-| ROS版本 | Noetic | 核心通信架构，实现节点间消息传递 |
-| Python版本 | 3.8+ | 节点代码开发语言 |
+<img width="191" height="162" alt="Installed camera and arm" src="https://github.com/user-attachments/assets/636a9190-90e8-42f5-8da0-b24fb9f60df8" />
 
-#### 2.2.2 Python第三方库（requirements.txt）
-```txt
-rospy==1.15.14
-cv-bridge==1.16.0
-opencv-python==4.5.5.62
-numpy==1.24.3
-message-filters==1.15.14
-sensor-msgs==1.13.1
-vision-msgs==1.0.0
-```
-
-### 3.1 视觉模块详细信息
-[机器人系统课程设计报告模版.docx](https://github.com/user-attachments/files/26588663/default.docx)
-
-安装图：
-<img width="191" height="162" alt="image" src="https://github.com/user-attachments/assets/636a9190-90e8-42f5-8da0-b24fb9f60df8" />
-
-ROS2节点工作流：
-<img width="433" height="317" alt="image" src="https://github.com/user-attachments/assets/b348779f-9cfe-4ba3-b202-9d760c7a4e19" />
-
-### 3.2 演示视频
-
+<img width="433" height="317" alt="Original ROS node workflow" src="https://github.com/user-attachments/assets/b348779f-9cfe-4ba3-b202-9d760c7a4e19" />
 
 https://github.com/user-attachments/assets/958b77d0-c741-4365-88f4-a5dfdcdb564c
 
+This ROS Noetic project upgrades the original closed-loop pipeline from
+`SSD-Mobilenet box -> box-centre depth -> fixed camera offset -> inverse
+kinematics` to a calibrated, mask-level RGB-D grasping pipeline:
 
+```text
+RGB-D + camera intrinsics
+  -> YOLOv8-Seg instance mask
+  -> mask/depth fusion and object point cloud
+  -> outlier filtering + PCA grasp axis
+  -> calibrated gripper_T_camera transform
+  -> obstacle-aware pre-grasp / grasp / reject decision
+  -> existing IK, joint limits, gripper and return motion
+```
+
+The existing `dr_robot_object_grasp.py` keeps responsibility for arm control.
+The new nodes publish standard ROS poses and clouds first, so they can be
+validated before connecting them to the physical arm.
+
+## What changed
+
+| Capability | Original pipeline | Upgraded pipeline | Practical effect |
+| --- | --- | --- | --- |
+| 2D perception | SSD-Mobilenet bounding box | YOLOv8-Seg instance mask | Separates adjacent targets and avoids background pixels inside the box. |
+| Depth estimate | One depth value at box centre | Hundreds of valid mask-depth points | Less sensitive to depth holes, edge pixels and a centre point falling on background. |
+| Object pose | HSV contour/Hough-line heuristic | Filtered 3D centroid plus PCA principal axis | Class-independent object centre and in-plane grasp orientation. |
+| Camera-arm transform | Fixed installation parameters and axis rearrangement | ChArUco multi-pose AX=XB hand-eye calibration with validation report | Transform is measurable, repeatable and saved as an extrinsic YAML. |
+| Obstacle response | No explicit obstacle decision | Clearance-cylinder policy: direct, raised approach, or reject | Prevents unsafe commands near tall obstacles; publishes a two-stage approach. |
+
+No performance figure is claimed until it is measured on the target camera,
+robot and object set.  The code produces the needed calibration and runtime
+outputs so the claims below can be filled with real data.
+
+## Algorithms and engineering choices
+
+### 1. Eye-in-hand calibration
+
+`node/handeye_calibrate.py` estimates `gripper_T_camera` with OpenCV's Tsai
+hand-eye solver.  A ChArUco board remains stationary in the robot base frame;
+for each capture the robot records `base_T_gripper`, while the board pose is
+estimated from the image.  The relative-motion relationship is the standard
+hand-eye equation `A X = X B`.
+
+The script retains only captures with at least six interpolated ChArUco corners
+and writes the transform plus cross-pose board-position consistency in mm.  Use
+12-20 poses spanning translations and rotations, then reserve at least five
+unseen poses to report test-point error.  Do not copy the calibration error
+into a resume until it has been measured on held-out poses.
+
+```bash
+rosrun dr_robot_object_follower handeye_calibrate.py \
+  --camera config/camera_intrinsics.yaml \
+  --poses config/handeye_samples.yaml \
+  --images data/handeye_captures \
+  --output config/gripper_T_camera.yaml
+```
+
+`config/*.example.yaml` documents both input schemas.  The control node should
+load `gripper_T_camera.yaml` instead of the legacy hard-coded `pl_camera`
+offset after the transform convention has been verified on the robot.
+
+### 2. YOLOv8-Seg and depth-mask fusion
+
+`node/yolov8_seg_pointcloud.py` uses the Ultralytics YOLOv8 segmentation API.
+It selects an instance mask, intersects it with aligned RealSense depth, rejects
+invalid range values, removes points far from median depth, suppresses the
+outer 10% by distance, and back-projects remaining pixels using `CameraInfo`:
+
+```text
+X = (u - cx) * Z / fx,  Y = (v - cy) * Z / fy,  Z = depth(u, v)
+```
+
+PCA/SVD of the resulting XY cloud gives a stable primary direction for a
+parallel gripper.  It publishes `~object_cloud`, `~grasp_candidate` and
+`~mask_overlay`, enabling RViz inspection and bag-file evaluation.  Fine-tune
+`yolov8s-seg` on the actual target classes; pretrained COCO weights alone are
+not evidence of performance on lab-specific parts.
+
+### 3. Obstacle-aware grasp policy
+
+`node/grasp_strategy.py` checks obstacle points in a configurable horizontal
+clearance cylinder around the candidate.  It publishes `[pre-grasp, grasp]` for
+direct targets, raises the approach over low obstacles, and rejects candidates
+when obstacle height exceeds the safety threshold.  This is an intentionally
+auditable baseline.  For a production-grade planner, feed the filtered cloud as
+collision objects into MoveIt and validate the full arm trajectory, not only
+the tool-centre path.
+
+## Installation and launch
+
+Target platform: ROS Noetic, Python 3, OpenCV with `aruco`, a RealSense RGB-D
+camera, and a CUDA-capable host or Jetson for real-time inference.
+
+```bash
+pip3 install ultralytics pyyaml
+cd ~/catkin_ws
+catkin_make
+source devel/setup.bash
+roslaunch dr_robot_object_follower yolov8_seg_grasp.launch model:=/path/to/best.pt
+```
+
+The model can later be exported to ONNX/TensorRT for deployment.  Keep model
+version, input resolution, precision and hardware in every latency report.
+
+## Evaluation protocol and expected improvement
+
+Record a rosbag for the original and upgraded pipeline under the same 20-30
+scenes: isolated objects, adjacent objects, partial occlusion, reflective/depth
+hole cases, and low/medium/high obstacles.  Use fixed target classes and random
+object poses.  Report all results as `mean +/- std`, number of trials, and the
+same success criterion: object lifted 50 mm and retained for 3 seconds.
+
+| Metric | Legacy measurement | Upgraded measurement | Why it matters |
+| --- | --- | --- | --- |
+| Calibration | held-out target position error (mm) | held-out target position error (mm) | Demonstrates that the transform, rather than a fixed offset, is valid. |
+| Perception | 3D centre error / valid depth rate | 3D centre error / valid depth rate | Measures benefit of mask-level depth fusion. |
+| Grasp | successes / attempts by scene | successes / attempts by scene | Shows end-to-end value, not only detector accuracy. |
+| Safety | collisions or rejected unsafe plans | collisions or rejected unsafe plans | Evaluates obstacle policy and conservatism. |
+| Runtime | RGB input to candidate pose latency | RGB input to candidate pose latency | Ensures the upgrade remains usable online. |
+
+Suggested honest conclusion after measurement: "Compared with box-centre depth,
+mask-level fusion reduced target-centre error from **[A] mm** to **[B] mm** and
+improved grasp success from **[C]/[N]** to **[D]/[N]** under the defined test
+set; calibration held-out error was **[E] mm**."  Replace every placeholder
+with a logged result and keep the bag/calibration YAML as evidence.
+
+## Resume wording
+
+Use only the first version before real-hardware validation:
+
+> Built a ROS Noetic RGB-D visual grasping pipeline for a six-axis robot;
+> implemented ChArUco hand-eye calibration (AX=XB), YOLOv8-Seg/depth-mask point
+> cloud fusion, PCA grasp-axis estimation and an obstacle-clearance pre-grasp
+> policy; integrated the candidate output with IK, joint-limit and gripper
+> control interfaces.
+
+After completing the evaluation protocol, replace it with:
+
+> Developed a ROS Noetic RGB-D grasping system for a six-axis robot. Calibrated
+> eye-in-hand extrinsics with ChArUco AX=XB (**[E] mm** held-out error), and
+> fused YOLOv8-Seg masks with aligned depth to estimate 3D centroids and grasp
+> axes. An obstacle-aware pre-grasp policy improved grasp success from
+> **[C]/[N]** to **[D]/[N]** across occlusion and obstacle test scenes.
+
+Avoid claiming generic "hand-eye calibration", "dynamic obstacle grasping", or
+an improvement percentage without the calibration YAML, rosbag, test protocol
+and measured result to support it.
+
+## Next engineering steps
+
+1. Add the calibrated transform to TF (`base -> gripper -> camera`) and remove
+   legacy `pl_camera` constants only after held-out validation.
+2. Fine-tune and validate YOLOv8-Seg on collected object masks; record mask
+   mAP, not only box mAP.
+3. Segment support plane and obstacles from the full scene cloud, then create
+   MoveIt collision objects for whole-arm collision checking.
+4. Add a state machine and motion completion/force checks before connecting
+   `~grasp_plan` to the hardware controller.
